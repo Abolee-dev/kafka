@@ -18,9 +18,8 @@ public class IndexRoutingTransformer {
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private static final String splunkHecUrl = System.getenv().getOrDefault("SPLUNK_HEC_URL", "http://localhost:8088/services/collector");
     private static final String splunkHecToken = System.getenv().getOrDefault("SPLUNK_HEC_TOKEN", "changeme");
-    private static final String otelIndex = System.getenv().getOrDefault("OTEL_SPLUNK_INDEX", "default");
     private static final String inputTopic = System.getenv().getOrDefault("KAFKA_INPUT_TOPIC", "raw-otel-topic");
-    private static final String updatedIndex = otelIndex + "_logs";
+    private static final String indexSuffix = System.getenv().getOrDefault("OTEL_INDEX_SUFFIX", "_logs");
 
     public static void main(String[] args) {
         Properties props = new Properties();
@@ -35,9 +34,16 @@ public class IndexRoutingTransformer {
         input.foreach((key, value) -> {
             try {
                 JsonNode root = objectMapper.readTree(value);
-                ((ObjectNode) root).put("otel.splunkindex", updatedIndex);
-                String payload = objectMapper.writeValueAsString(root);
-                sendToSplunkWithRetry(payload, 3);
+                if (root.has("otel.splunkindex")) {
+                    String originalIndex = root.get("otel.splunkindex").asText();
+                    String updatedIndex = originalIndex + indexSuffix;
+                    ((ObjectNode) root).put("otel.splunkindex", updatedIndex);
+
+                    String payload = objectMapper.writeValueAsString(root);
+                    sendToSplunkWithRetry(payload, updatedIndex, 3);
+                } else {
+                    System.err.println("otel.splunkindex key not found in message: " + value);
+                }
             } catch (Exception e) {
                 System.err.println("Error processing message: " + e.getMessage());
                 e.printStackTrace();
@@ -49,8 +55,8 @@ public class IndexRoutingTransformer {
         Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
     }
 
-    private static void sendToSplunkWithRetry(String payload, int maxRetries) {
-        String event = "{\"event\":" + """ + payload.replace(""", "\"") + "",\"index\":\"" + updatedIndex + "\"}";
+    private static void sendToSplunkWithRetry(String payload, String index, int maxRetries) {
+        String event = "{\"event\":" + """ + payload.replace(""", "\"") + "",\"index\":\"" + index + "\"}";
         int attempt = 0;
         while (attempt < maxRetries) {
             try {
